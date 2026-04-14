@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
-from app.config import DB_FILE, CREDIT_DATABASE_URL, DATABASE_URL
+from app.config import DB_FILE, CREDIT_DATABASE_URL, DATABASE_URL, DEFAULT_GROUP_CREDITS, DEFAULT_USER_CREDITS
 
 # PostgreSQL support
 try:
@@ -768,11 +768,11 @@ class CreditDatabase:
                     exists = self.fetch_one("SELECT id FROM credit_groups WHERE id = %s", (group_id,))
                     
                     if not exists:
-                        # Create new group with default 1000 credits (OpenWebUI groups are not system groups)
+                        # Create new group with configurable default credits (OpenWebUI groups are not system groups)
                         self.execute_query("""
                             INSERT INTO credit_groups (id, name, default_credits, is_system_group)
                             VALUES (%s, %s, %s, %s)
-                        """, (group_id, group_name, 1000.0, False))
+                        """, (group_id, group_name, DEFAULT_GROUP_CREDITS, False))
                         synced_count += 1
                         print(f"✅ Created new group: {group_name} ({group_id})")
                     else:
@@ -1018,11 +1018,11 @@ class CreditDatabase:
                 exists = self.fetch_one("SELECT id FROM credit_groups WHERE id = %s", (group_id,))
                 
                 if not exists:
-                    # Create new group with default 1000 credits (OpenWebUI groups are not system groups)
+                    # Create new group with configurable default credits (OpenWebUI groups are not system groups)
                     self.execute_query("""
                         INSERT INTO credit_groups (id, name, default_credits, is_system_group)
                         VALUES (%s, %s, %s, %s)
-                    """, (group_id, group_name, 1000.0, False))
+                    """, (group_id, group_name, DEFAULT_GROUP_CREDITS, False))
                     synced_groups += 1
                     print(f"✅ Created new group: {group_name} ({group_id})")
             
@@ -1042,10 +1042,10 @@ class CreditDatabase:
                     # Ensure the user exists in our credit system before assigning groups
                     user_exists = self.fetch_one("SELECT id FROM credit_users WHERE id = %s", (uid,))
                     if not user_exists:
-                        # Create the user with a sensible default balance (match other sync behavior)
+                        # Create the user with configurable default balance
                         self.update_user_credits(
                             user_id=uid,
-                            new_balance=1000.0,
+                            new_balance=DEFAULT_USER_CREDITS,
                             actor='sync',
                             transaction_type='sync',
                             reason='Created user during group membership sync from OpenWebUI'
