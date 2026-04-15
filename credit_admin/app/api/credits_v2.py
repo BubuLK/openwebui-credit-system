@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel
 
 from app.database import db
-from app.config import DB_FILE, DATABASE_URL  # OpenWebUI database for user sync
+from app.config import DB_FILE, DATABASE_URL, AUTO_APPLY_GROUP_CREDITS  # OpenWebUI database for user sync
 from app.auth import get_current_admin_user, verify_api_key, User
 
 router = APIRouter()
@@ -687,22 +687,32 @@ async def sync_all_from_openwebui():
     """Sync users, models, and groups from OpenWebUI database"""
     # First sync groups
     group_count = db.sync_groups_from_openwebui()
-    
+
     # Then sync users
     user_count = await sync_all_users_from_openwebui()
-    
+
     # Then sync models
     model_count = await sync_models_from_openwebui()
-    
+
     # Finally sync user-group memberships
     user_groups_count = db.sync_all_user_groups_from_openwebui()
-    
-    return {
-        "users": user_count, 
-        "models": model_count, 
+
+    # Apply group credit adjustments if enabled
+    adjustment_result = None
+    if AUTO_APPLY_GROUP_CREDITS:
+        adjustment_result = db.apply_group_credit_adjustments()
+
+    result = {
+        "users": user_count,
+        "models": model_count,
         "groups": group_count,
         "user_groups": user_groups_count
     }
+
+    if adjustment_result:
+        result["adjustments"] = adjustment_result
+
+    return result
 
 # Manual sync endpoint
 @router.post("/api/credits/sync-users", tags=["admin"])
@@ -759,6 +769,35 @@ async def manual_sync_all(current_user: User = Depends(get_current_admin_user)):
         }
     except Exception as e:
         return {"status": "error", "message": f"Full sync failed: {str(e)}"}
+
+@router.post("/api/credits/apply-group-adjustments", tags=["admin"])
+async def apply_group_adjustments(
+    request: dict,
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Manually trigger application of group default credits to user balances.
+
+    Request body:
+    - force_all: bool - If true, adjust all users regardless of changes
+    """
+    try:
+        force_all = request.get("force_all", False)
+        result = db.apply_group_credit_adjustments(force_all=force_all)
+
+        db.log_action(
+            "manual_group_adjustment",
+            current_user.username,
+            f"Manual group credit adjustment triggered - {result['users_adjusted']} users adjusted, total: {result['total_adjustment']}"
+        )
+
+        return {
+            "status": "success",
+            "message": f"Adjusted {result['users_adjusted']} users with total adjustment of {result['total_adjustment']} credits",
+            "details": result
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Group adjustment failed: {str(e)}"}
 
 # Statistics endpoints
 @router.get("/api/credits/statistics/user/{user_id}", tags=["statistics"])

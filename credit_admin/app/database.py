@@ -104,6 +104,7 @@ class CreditDatabase:
                     CREATE TABLE IF NOT EXISTS credit_users (
                         id TEXT PRIMARY KEY,
                         balance REAL NOT NULL DEFAULT 0.0,
+                        last_applied_default_credits REAL NOT NULL DEFAULT 0.0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
@@ -256,7 +257,13 @@ class CreditDatabase:
                     cursor.execute("ALTER TABLE credit_usage_statistics ADD COLUMN IF NOT EXISTS balance_before_reset REAL")
                 except:
                     pass
-                
+
+                # Add last_applied_default_credits column if it doesn't exist
+                try:
+                    cursor.execute("ALTER TABLE credit_users ADD COLUMN IF NOT EXISTS last_applied_default_credits REAL NOT NULL DEFAULT 0.0")
+                except:
+                    pass
+
                 # Indexes
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_credit_user_groups_user ON credit_user_groups(user_id)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_credit_user_groups_group ON credit_user_groups(group_id)")
@@ -310,6 +317,7 @@ class CreditDatabase:
                     CREATE TABLE IF NOT EXISTS credit_users (
                         id TEXT PRIMARY KEY,
                         balance REAL NOT NULL DEFAULT 0.0,
+                        last_applied_default_credits REAL DEFAULT 0.0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
@@ -464,6 +472,12 @@ class CreditDatabase:
                 
                 try:
                     cursor.execute("ALTER TABLE credit_usage_statistics ADD COLUMN balance_before_reset REAL")
+                except sqlite3.OperationalError:
+                    pass
+
+                # Add last_applied_default_credits column if it doesn't exist
+                try:
+                    cursor.execute("ALTER TABLE credit_users ADD COLUMN last_applied_default_credits REAL DEFAULT 0.0")
                 except sqlite3.OperationalError:
                     pass
 
@@ -818,73 +832,96 @@ class CreditDatabase:
             user_group_ids: List[str] = []
 
             try:
-                cursor.execute(f"SELECT * FROM {table_name}")
-                rows = cursor.fetchall()
-                cols = [d[0] for d in cursor.description]
-                candidate_cols = [c for c in ['user_ids', 'users', 'members', 'member_ids', 'user_list'] if c in cols]
+                # FIRST: Try group_member join table (OpenWebUI's actual schema)
+                try:
+                    cursor.execute(
+                        "SELECT group_id FROM group_member WHERE user_id = %s" if DATABASE_URL
+                        else "SELECT group_id FROM group_member WHERE user_id = ?",
+                        (user_id,)
+                    )
+                    gm_rows = cursor.fetchall()
+                    if gm_rows:
+                        print(f"✅ Using group_member table for user {user_id}")
+                        for r in gm_rows:
+                            gid = r[0] if DATABASE_URL else r['group_id']
+                            user_group_ids.append(gid)
+                except Exception:
+                    pass  # Fall through to other methods if group_member doesn't exist
 
-                if candidate_cols:
-                    col = candidate_cols[0]
-                    col_idx = {name: i for i, name in enumerate(cols)}
-                    id_idx = col_idx.get('id', 0)
-                    for row in rows:
-                        group_id = row[id_idx] if DATABASE_URL else row['id']
-                        user_ids_val = row[col_idx[col]] if DATABASE_URL else row[col]
-                        if not user_ids_val:
-                            continue
-                        try:
-                            if isinstance(user_ids_val, str):
-                                parsed = json.loads(user_ids_val.strip())
-                            else:
-                                parsed = list(user_ids_val)
-                        except (json.JSONDecodeError, TypeError, ValueError):
-                            continue
-                        if user_id in parsed:
-                            user_group_ids.append(group_id)
-                else:
-                    # Try join tables
-                    join_table_candidates = ['group_user', 'user_group', 'group_members', 'group_users', 'user_groups', 'group_member']
-                    found = False
-                    for jt in join_table_candidates:
-                        try:
-                            cursor.execute(f"SELECT group_id FROM {jt} WHERE user_id = %s" if DATABASE_URL else f"SELECT group_id FROM {jt} WHERE user_id = ?", (user_id,))
-                            jt_rows = cursor.fetchall()
-                            if jt_rows:
-                                for r in jt_rows:
-                                    gid = r[0] if DATABASE_URL else r['group_id']
-                                    user_group_ids.append(gid)
-                                found = True
-                                break
-                        except Exception:
-                            continue
+                # If we already have memberships from group_member, skip the rest
+                if not user_group_ids:
+                    # Fallback: try to read from group table directly
+                    cursor.execute(f"SELECT * FROM {table_name}")
+                    rows = cursor.fetchall()
+                    cols = [d[0] for d in cursor.description]
+                    candidate_cols = [c for c in ['user_ids', 'users', 'members', 'member_ids', 'user_list'] if c in cols]
 
-                    if not found:
-                        # Fallback: check user table for group/group_id
-                        try:
-                            user_query = f"SELECT group, group_id FROM \"user\" WHERE id = %s" if DATABASE_URL else "SELECT group, group_id FROM user WHERE id = ?"
-                            cursor.execute(user_query, (user_id,))
-                            ur = cursor.fetchone()
-                            if ur:
-                                if DATABASE_URL:
-                                    group_val = ur[0] or ur[1]
+                    if candidate_cols:
+                        col = candidate_cols[0]
+                        col_idx = {name: i for i, name in enumerate(cols)}
+                        id_idx = col_idx.get('id', 0)
+                        for row in rows:
+                            group_id = row[id_idx] if DATABASE_URL else row['id']
+                            user_ids_val = row[col_idx[col]] if DATABASE_URL else row[col]
+                            if not user_ids_val:
+                                continue
+                            try:
+                                if isinstance(user_ids_val, str):
+                                    parsed = json.loads(user_ids_val.strip())
                                 else:
-                                    group_val = ur['group'] or ur.get('group_id')
-                                if group_val:
-                                    try:
-                                        if isinstance(group_val, str) and (group_val.strip().startswith('[') or group_val.strip().startswith('{')):
-                                            parsed = json.loads(group_val)
-                                            if isinstance(parsed, list):
-                                                user_group_ids.extend(parsed)
-                                            elif isinstance(parsed, dict):
-                                                ids = parsed.get('group_ids') or parsed.get('user_ids')
-                                                if isinstance(ids, list):
-                                                    user_group_ids.extend(ids)
-                                        else:
+                                    parsed = list(user_ids_val)
+                            except (json.JSONDecodeError, TypeError, ValueError):
+                                continue
+                            if user_id in parsed:
+                                user_group_ids.append(group_id)
+                    else:
+                        # Try other join table candidates (excluding group_member which we already tried)
+                        join_table_candidates = ['group_user', 'user_group', 'group_members', 'group_users', 'user_groups']
+                        found = False
+                        for jt in join_table_candidates:
+                            try:
+                                cursor.execute(
+                                    f"SELECT group_id FROM {jt} WHERE user_id = %s" if DATABASE_URL
+                                    else f"SELECT group_id FROM {jt} WHERE user_id = ?",
+                                    (user_id,)
+                                )
+                                jt_rows = cursor.fetchall()
+                                if jt_rows:
+                                    for r in jt_rows:
+                                        gid = r[0] if DATABASE_URL else r['group_id']
+                                        user_group_ids.append(gid)
+                                    found = True
+                                    break
+                            except Exception:
+                                continue
+
+                        if not found:
+                            # Fallback: check user table for group/group_id
+                            try:
+                                user_query = f"SELECT group, group_id FROM \"user\" WHERE id = %s" if DATABASE_URL else "SELECT group, group_id FROM user WHERE id = ?"
+                                cursor.execute(user_query, (user_id,))
+                                ur = cursor.fetchone()
+                                if ur:
+                                    if DATABASE_URL:
+                                        group_val = ur[0] or ur[1]
+                                    else:
+                                        group_val = ur['group'] or ur.get('group_id')
+                                    if group_val:
+                                        try:
+                                            if isinstance(group_val, str) and (group_val.strip().startswith('[') or group_val.strip().startswith('{')):
+                                                parsed = json.loads(group_val)
+                                                if isinstance(parsed, list):
+                                                    user_group_ids.extend(parsed)
+                                                elif isinstance(parsed, dict):
+                                                    ids = parsed.get('group_ids') or parsed.get('user_ids')
+                                                    if isinstance(ids, list):
+                                                        user_group_ids.extend(ids)
+                                            else:
+                                                user_group_ids.append(str(group_val))
+                                        except Exception:
                                             user_group_ids.append(str(group_val))
-                                    except Exception:
-                                        user_group_ids.append(str(group_val))
-                        except Exception:
-                            pass
+                            except Exception:
+                                pass
 
                 # Persist memberships
                 self.set_user_groups(user_id, user_group_ids)
@@ -920,49 +957,72 @@ class CreditDatabase:
             user_groups_map: Dict[str, List[str]] = {}
 
             try:
-                cursor.execute(f"SELECT * FROM {table_name}")
-                groups = cursor.fetchall()
-                cols = [d[0] for d in cursor.description]
-
-                candidate_cols = [c for c in ['user_ids', 'users', 'members', 'member_ids', 'user_list'] if c in cols]
-                if candidate_cols:
-                    col = candidate_cols[0]
-                    col_idx = {name: i for i, name in enumerate(cols)}
-                    id_idx = col_idx.get('id', 0)
-
-                    for row in groups:
-                        group_id = row[id_idx] if DATABASE_URL else row['id']
-                        user_ids_val = row[col_idx[col]] if DATABASE_URL else row[col]
-                        if not user_ids_val:
-                            continue
-                        try:
-                            if isinstance(user_ids_val, str):
-                                parsed = json.loads(user_ids_val.strip())
+                # FIRST: Try group_member join table (OpenWebUI's actual schema)
+                # OpenWebUI uses a separate group_member table for many-to-many relationships
+                try:
+                    cursor.execute("SELECT group_id, user_id FROM group_member")
+                    gm_rows = cursor.fetchall()
+                    if gm_rows:
+                        print(f"✅ Using group_member table for user-group mappings")
+                        for r in gm_rows:
+                            if DATABASE_URL:
+                                gid, uid = r[0], r[1]
                             else:
-                                parsed = list(user_ids_val)
-                        except (json.JSONDecodeError, TypeError, ValueError):
-                            continue
-                        for uid in parsed:
-                            user_groups_map.setdefault(uid, []).append(group_id)
+                                gid, uid = r['group_id'], r['user_id']
+                            user_groups_map.setdefault(uid, []).append(gid)
+                except Exception:
+                    pass  # Fall through to other methods if group_member doesn't exist
+
+                # If we already have mappings from group_member, skip the rest
+                if user_groups_map:
+                    # Still fetch groups for later processing
+                    cursor.execute(f"SELECT * FROM {table_name}")
+                    groups = cursor.fetchall()
                 else:
-                    # Try join table candidates
-                    join_table_candidates = ['group_user', 'user_group', 'group_members', 'group_users', 'user_groups', 'group_member']
-                    found = False
-                    for jt in join_table_candidates:
-                        try:
-                            cursor.execute(f"SELECT group_id, user_id FROM {jt}")
-                            jt_rows = cursor.fetchall()
-                            if jt_rows:
-                                for r in jt_rows:
-                                    if DATABASE_URL:
-                                        gid, uid = r[0], r[1]
-                                    else:
-                                        gid, uid = r['group_id'], r['user_id']
-                                    user_groups_map.setdefault(uid, []).append(gid)
-                                found = True
-                                break
-                        except Exception:
-                            continue
+                    # Fallback: try to read from group table directly
+                    cursor.execute(f"SELECT * FROM {table_name}")
+                    groups = cursor.fetchall()
+                    cols = [d[0] for d in cursor.description]
+
+                    candidate_cols = [c for c in ['user_ids', 'users', 'members', 'member_ids', 'user_list'] if c in cols]
+                    if candidate_cols:
+                        col = candidate_cols[0]
+                        col_idx = {name: i for i, name in enumerate(cols)}
+                        id_idx = col_idx.get('id', 0)
+
+                        for row in groups:
+                            group_id = row[id_idx] if DATABASE_URL else row['id']
+                            user_ids_val = row[col_idx[col]] if DATABASE_URL else row[col]
+                            if not user_ids_val:
+                                continue
+                            try:
+                                if isinstance(user_ids_val, str):
+                                    parsed = json.loads(user_ids_val.strip())
+                                else:
+                                    parsed = list(user_ids_val)
+                            except (json.JSONDecodeError, TypeError, ValueError):
+                                continue
+                            for uid in parsed:
+                                user_groups_map.setdefault(uid, []).append(group_id)
+                    else:
+                        # Try other join table candidates
+                        join_table_candidates = ['group_user', 'user_group', 'group_members', 'group_users', 'user_groups']
+                        found = False
+                        for jt in join_table_candidates:
+                            try:
+                                cursor.execute(f"SELECT group_id, user_id FROM {jt}")
+                                jt_rows = cursor.fetchall()
+                                if jt_rows:
+                                    for r in jt_rows:
+                                        if DATABASE_URL:
+                                            gid, uid = r[0], r[1]
+                                        else:
+                                            gid, uid = r['group_id'], r['user_id']
+                                        user_groups_map.setdefault(uid, []).append(gid)
+                                    found = True
+                                    break
+                            except Exception:
+                                continue
 
                     if not found:
                         # Fallback: check user table for group/group_id field
@@ -1070,7 +1130,113 @@ class CreditDatabase:
         finally:
             if conn:
                 conn.close()
-    
+
+    def apply_group_credit_adjustments(self, force_all: bool = False) -> Dict[str, Any]:
+        """
+        Apply default credit changes to user balances based on current group memberships.
+
+        For each user:
+        - Calculate current total_default_credits (sum of all group defaults)
+        - Compare with last_applied_default_credits stored in database
+        - Add/remove the difference (additive adjustment): new_balance = current_balance + (new_default - old_default)
+        - Update last_applied_default_credits to current value
+
+        Args:
+            force_all: If True, adjust ALL users. If False, only adjust users with changes.
+
+        Returns:
+            Dict with adjustment results (users_adjusted, total_adjustment, details)
+        """
+        from datetime import datetime, timezone
+
+        # Get all users with their group memberships
+        users = self.get_all_users_with_credits()
+
+        users_adjusted = 0
+        total_adjustment = 0.0
+        details = []
+
+        for user in users:
+            user_id = user['id']
+            current_balance = user['balance']
+            current_default_credits = user.get('total_default_credits', 0)
+
+            # Get last applied default credits
+            last_applied = user.get('last_applied_default_credits', 0)
+            if last_applied is None:
+                last_applied = 0
+
+            # Calculate adjustment needed
+            adjustment = current_default_credits - last_applied
+
+            # Skip if no adjustment needed and not forcing
+            if adjustment == 0 and not force_all:
+                continue
+
+            # Calculate new balance (additive adjustment)
+            new_balance = current_balance + adjustment
+
+            # Apply the adjustment
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+
+                # Update balance
+                self.execute_query("""
+                    UPDATE credit_users
+                    SET balance = %s, last_applied_default_credits = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (new_balance, current_default_credits, user_id))
+
+                # Log transaction
+                sign = "+" if adjustment >= 0 else ""
+                self.execute_query("""
+                    INSERT INTO credit_transactions
+                    (user_id, amount, transaction_type, reason, actor, balance_after)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (
+                    user_id,
+                    adjustment,
+                    'group_adjustment',
+                    f'Group credit adjustment: {sign}{adjustment} credits',
+                    'system',
+                    new_balance
+                ))
+
+                conn.commit()
+
+            users_adjusted += 1
+            total_adjustment += adjustment
+
+            # Get user name for details
+            user_info = self.get_users_info_from_openwebui([user_id])
+            user_name = user_info.get(user_id, {}).get('name', user_id)
+
+            details.append({
+                'user_id': user_id,
+                'user_name': user_name,
+                'adjustment': adjustment,
+                'new_balance': new_balance,
+                'old_default_credits': last_applied,
+                'new_default_credits': current_default_credits
+            })
+
+            print(f"✅ Adjusted {user_name}: {sign}{adjustment} credits (balance: {new_balance})")
+
+        # Log the overall adjustment
+        if users_adjusted > 0:
+            self.log_action(
+                "group_credit_adjustment",
+                "system",
+                f"Applied group credit adjustments to {users_adjusted} users, total adjustment: {total_adjustment}",
+                {"users_adjusted": users_adjusted, "total_adjustment": total_adjustment}
+            )
+
+        return {
+            'users_adjusted': users_adjusted,
+            'total_adjustment': total_adjustment,
+            'details': details
+        }
+
     # Model operations
     def get_model_pricing(self, model_id: str) -> Optional[Dict[str, Any]]:
         """Get model pricing information"""

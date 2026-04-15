@@ -44,3 +44,10 @@ if not CREDIT_DATABASE_URL:
         logger.error("CREDIT_DATABASE_URL not defined and required DB_CREDIT_* environment variables are missing.")
         logger.error("Either set CREDIT_DATABASE_URL or provide: DB_HOST, DB_PORT, DB_CREDIT_NAME, DB_CREDIT_USER, DB_CREDIT_PASSWORD")
         raise ValueError("Missing credit database configuration: CREDIT_DATABASE_URL or required DB_CREDIT_* environment variables not set")
+
+# Default credits configuration
+DEFAULT_GROUP_CREDITS = float(os.getenv("DEFAULT_GROUP_CREDITS", "1000"))
+DEFAULT_USER_CREDITS = float(os.getenv("DEFAULT_USER_CREDITS", "1000"))
+
+# Auto-apply group credits configuration
+AUTO_APPLY_GROUP_CREDITS = os.getenv("AUTO_APPLY_GROUP_CREDITS", "true").lower() == "true"
