@@ -780,20 +780,67 @@ async def apply_group_adjustments(
 
     Request body:
     - force_all: bool - If true, adjust all users regardless of changes
+    - dry_run: bool - If true, preview changes without applying them
     """
     try:
         force_all = request.get("force_all", False)
-        result = db.apply_group_credit_adjustments(force_all=force_all)
+        dry_run = request.get("dry_run", False)
 
-        db.log_action(
-            "manual_group_adjustment",
-            current_user.username,
-            f"Manual group credit adjustment triggered - {result['users_adjusted']} users adjusted, total: {result['total_adjustment']}"
-        )
+        if dry_run:
+            # Dry run mode - calculate adjustments without applying
+            users = db.get_all_users_with_credits()
+            users_adjusted = 0
+            total_adjustment = 0.0
+            details = []
+
+            for user in users:
+                user_id = user['id']
+                current_default_credits = user.get('total_default_credits', 0)
+                last_applied = user.get('last_applied_default_credits', 0) or 0
+                adjustment = current_default_credits - last_applied
+
+                # Include all users in dry run if force_all, otherwise only those with changes
+                if adjustment != 0 or force_all:
+                    users_adjusted += 1
+                    total_adjustment += adjustment
+
+                    # Get user name for details
+                    user_info = db.get_users_info_from_openwebui([user_id])
+                    user_name = user_info.get(user_id, {}).get('name', user_id)
+
+                    details.append({
+                        'user_id': user_id,
+                        'user_name': user_name,
+                        'adjustment': adjustment,
+                        'new_balance': user['balance'] + adjustment,
+                        'old_default_credits': last_applied,
+                        'new_default_credits': current_default_credits,
+                        'preview_only': True  # Mark as preview data
+                    })
+
+            result = {
+                'users_adjusted': users_adjusted,
+                'total_adjustment': total_adjustment,
+                'details': details,
+                'dry_run': True
+            }
+
+            message = f"Preview: {users_adjusted} users would be adjusted with total of {total_adjustment:+.1f} credits"
+        else:
+            # Normal mode - apply actual adjustments
+            result = db.apply_group_credit_adjustments(force_all=force_all)
+
+            db.log_action(
+                "manual_group_adjustment",
+                current_user.username,
+                f"Manual group credit adjustment triggered - {result['users_adjusted']} users adjusted, total: {result['total_adjustment']}"
+            )
+
+            message = f"Adjusted {result['users_adjusted']} users with total adjustment of {result['total_adjustment']} credits"
 
         return {
             "status": "success",
-            "message": f"Adjusted {result['users_adjusted']} users with total adjustment of {result['total_adjustment']} credits",
+            "message": message,
             "details": result
         }
     except Exception as e:
