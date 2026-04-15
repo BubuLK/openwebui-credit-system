@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from pydantic import BaseModel
 
 from app.database import db
-from app.config import DB_FILE, DATABASE_URL, AUTO_APPLY_GROUP_CREDITS  # OpenWebUI database for user sync
+<<<<<<< HEAD
+from app.config import DB_FILE, DATABASE_URL, AUTO_APPLY_GROUP_CREDITS, DEFAULT_USER_CREDITS  # OpenWebUI database for user sync
 from app.auth import get_current_admin_user, verify_api_key, User
 
 router = APIRouter()
@@ -497,7 +498,7 @@ async def sync_user_from_openwebui(user_id: str):
             # Create user in credit system with default group
             db.update_user_credits(
                 user_id=user[0] if DATABASE_URL else user["id"],
-                new_balance=1000.0,  # Default credits
+                new_balance=DEFAULT_USER_CREDITS,  # Default credits from config
                 actor="sync",
                 transaction_type="sync",
                 reason="Synced from OpenWebUI"
@@ -666,7 +667,7 @@ async def sync_all_users_from_openwebui():
             if not existing:
                 db.update_user_credits(
                     user_id=user_id,
-                    new_balance=1000.0,  # Default credits
+                    new_balance=DEFAULT_USER_CREDITS,  # Default credits from config
                     actor="sync",
                     transaction_type="sync",
                     reason="Initial sync from OpenWebUI"

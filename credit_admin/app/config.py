@@ -37,7 +37,7 @@ if not CREDIT_DATABASE_URL:
     db_credit_name = os.getenv("DB_CREDIT_NAME")
     db_credit_user = os.getenv("DB_CREDIT_USER")
     db_credit_password = os.getenv("DB_CREDIT_PASSWORD")
-    
+
     if all([db_host, db_port, db_credit_name, db_credit_user, db_credit_password]):
         CREDIT_DATABASE_URL = f"postgresql://{db_credit_user}:{db_credit_password}@{db_host}:{db_port}/{db_credit_name}"
     else:
