@@ -229,6 +229,13 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 # Database
 OPENWEBUI_DATABASE_PATH=/root/.open-webui/webui.db
 
+# Default Credits Configuration
+DEFAULT_GROUP_CREDITS=1000  # Base credits for group memberships
+DEFAULT_USER_CREDITS=1000   # Base credits for direct user assignments
+
+# Auto-Apply Group Credits
+AUTO_APPLY_GROUP_CREDITS=true  # Automatically apply group credits during sync
+
 # Path Configuration
 # ROOT_PATH=/credits  # NOT needed - nginx handles path routing
 # JavaScript auto-detects BASE_PATH from browser URL
@@ -318,11 +325,49 @@ openwebui-credit-system/
 - `POST /api/credits/update` - Update user credits
 - `POST /api/credits/models/update` - Update model pricing
 - `POST /api/credits/sync-all` - Manual sync from OpenWebUI
+- `POST /api/credits/apply-group-adjustments` - Apply group credit adjustments to user balances (supports `dry_run` for preview)
 
 #### Extension Endpoints (API Key Authentication)
 - `GET /api/credits/user/{user_id}` - Get user credit information
 - `GET /api/credits/model/{model_id}` - Get model pricing
 - `POST /api/credits/deduct-tokens` - Deduct credits for token usage
+
+#### Group Credit Adjustment Endpoint
+
+**`POST /api/credits/apply-group-adjustments`**
+
+Applies group default credits to user balances based on current group memberships. Supports dry-run mode for previewing changes.
+
+**Request Body**:
+```json
+{
+  "force_all": false,
+  "dry_run": false
+}
+```
+
+**Parameters**:
+- `force_all` (boolean): If true, adjust all users regardless of whether their default credits have changed
+- `dry_run` (boolean): If true, preview adjustments without applying them to the database
+
+**Example Response** (dry_run=true):
+```json
+{
+  "status": "success",
+  "message": "Preview: Would adjust 5 users with total adjustment of 5000 credits",
+  "details": {
+    "users_adjusted": 5,
+    "total_adjustment": 5000.0,
+    "dry_run": true,
+    "details": [...]
+  }
+}
+```
+
+**Use Cases**:
+- Preview credit adjustments before applying
+- Verify group membership impact on user balances
+- Audit planned changes for compliance
 
 ### 📊 Model Availability Management
 
@@ -331,6 +376,35 @@ The system automatically tracks which models are available in OpenWebUI:
 - **Real-time Updates**: Changes reflected immediately in public pricing
 - **Admin Visibility**: Clear status indicators (✅ Available / ❌ Unavailable)
 - **Performance**: No repeated database queries to OpenWebUI
+
+### 👥 Group Credit Adjustments
+
+The system automatically applies group default credits to user balances when group memberships change:
+
+**How It Works**:
+- Users receive their entitled credits immediately when added to groups
+- Credits are adjusted additively: `new_balance = current_balance + (new_default - old_default)`
+- Each adjustment is logged as a transaction with type `group_adjustment`
+- The `last_applied_default_credits` field tracks what has been applied
+
+**Automatic vs Manual**:
+- By default, adjustments are applied automatically during sync (`AUTO_APPLY_GROUP_CREDITS=true`)
+- Manual trigger available via `/api/credits/apply-group-adjustments` endpoint
+
+**Dry-Run Mode**:
+- Preview adjustments before applying with `dry_run=true` parameter
+- Useful for auditing, compliance, and verifying planned changes
+- No database changes occur in dry-run mode
+
+**Configuration**:
+```bash
+# Disable automatic adjustments (manual only)
+AUTO_APPLY_GROUP_CREDITS=false
+
+# Set default credit amounts
+DEFAULT_GROUP_CREDITS=1000
+DEFAULT_USER_CREDITS=500
+```
 
 ### Database Schema
 

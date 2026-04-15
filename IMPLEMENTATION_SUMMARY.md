@@ -1,10 +1,14 @@
 # Implementation Summary: Group Credit Adjustments Feature
 
-## Date: 2026-04-14
+## Date: 2026-04-14 (Updated 2026-04-15)
 
 ## Overview
 
-Implemented automatic application of group default credits to user balances when group memberships change. This feature ensures users receive their entitled credits immediately when added to groups, rather than waiting for the monthly reset.
+This implementation summary covers three key features:
+
+1. **Automatic Group Credit Adjustments**: Automatic application of group default credits to user balances when group memberships change
+2. **Dry-Run Mode**: Preview credit adjustments before applying them to ensure accuracy and prevent unintended changes
+3. **Default Credits Configuration**: Configurable default credit amounts for groups and users via environment variables
 
 ---
 
@@ -115,18 +119,24 @@ if AUTO_APPLY_GROUP_CREDITS:
 **Request Body**:
 ```json
 {
-  "force_all": false
+  "force_all": false,
+  "dry_run": false
 }
 ```
 
-**Response** (Success):
+**Parameters**:
+- `force_all` (boolean, optional): If true, adjust all users regardless of whether their default credits have changed. Default: `false`
+- `dry_run` (boolean, optional): If true, preview adjustments without applying them to the database. Default: `false`
+
+**Response** (Success - Dry Run):
 ```json
 {
   "status": "success",
-  "message": "Adjusted 5 users with total adjustment of 5000 credits",
+  "message": "Preview: Would adjust 5 users with total adjustment of 5000 credits",
   "details": {
     "users_adjusted": 5,
     "total_adjustment": 5000.0,
+    "dry_run": true,
     "details": [
       {
         "user_id": "user123",
@@ -134,7 +144,8 @@ if AUTO_APPLY_GROUP_CREDITS:
         "adjustment": 1000,
         "new_balance": 2000,
         "old_default_credits": 0,
-        "new_default_credits": 1000
+        "new_default_credits": 1000,
+        "preview_only": true
       }
     ]
   }
@@ -210,11 +221,96 @@ VALUES (%s, %s, %s, %s, %s, %s)
 
 ---
 
+## Dry-Run Mode Feature
+
+### Overview
+
+Dry-run mode allows administrators to preview credit adjustments before applying them to the database. This prevents unintended changes and provides transparency for credit operations.
+
+### Implementation Details
+
+**File**: `credit_admin/app/api/credits_v2.py` (line 773-850)
+
+**New Parameter**: `dry_run` (boolean, default: `false`)
+
+**Behavior**:
+- When `dry_run=true`: Calculates all adjustments without writing to database
+- Returns same response structure as normal execution
+- Marks results with `dry_run: true` and `preview_only: true` flags
+- No transactions are logged, no balance changes are persisted
+
+**Use Cases**:
+- Preview impact of group membership changes before applying
+- Verify adjustment calculations before bulk operations
+- Audit and compliance review of planned changes
+- Testing with `force_all=true` without affecting user balances
+
+### Example Usage
+
+```bash
+# Preview all pending adjustments
+curl -X POST https://yourdomain.com/credits/api/credits/apply-group-adjustments \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -d '{"force_all": false, "dry_run": true}'
+
+# Preview adjustments for all users (even if no changes)
+curl -X POST https://yourdomain.com/credits/api/credits/apply-group-adjustments \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -d '{"force_all": true, "dry_run": true}'
+```
+
+---
+
+## Default Credits Configuration
+
+### Overview
+
+The system supports configurable default credit amounts via environment variables, allowing flexible credit allocation strategies for groups and individual users.
+
+### Configuration Variables
+
+**DEFAULT_GROUP_CREDITS** (default: `1000`)
+- Base credit amount assigned to users via group membership
+- Applied automatically when users join groups with default allocations
+- Can be overridden per-group in the admin interface
+
+**DEFAULT_USER_CREDITS** (default: `1000`)
+- Base credit amount for direct user assignments
+- Used when assigning credits directly to users (not via groups)
+- Provides fallback for users without group memberships
+
+### How It Works
+
+1. **Group-Based Allocation**: Users inherit credits from their group memberships
+2. **Additive Adjustments**: When group membership changes, credits are adjusted additively
+3. **Tracking System**: `last_applied_default_credits` tracks what has been applied
+4. **Formula**: `new_balance = current_balance + (new_default_credits - old_default_credits)`
+
+### Example Scenarios
+
+**Scenario 1: New User Joins Premium Group**
+- User has 0 credits, joins "premium" group (1000 credits default)
+- Adjustment: +1000 credits
+- New balance: 1000 credits
+
+**Scenario 2: User Moves from Premium to Basic Group**
+- User has 1000 credits (from premium), moves to "basic" group (500 credits default)
+- Adjustment: 500 - 1000 = -500 credits
+- New balance: 500 credits
+
+**Scenario 3: User in Multiple Groups**
+- User in "premium" (1000) + "student" (500) = 1500 total default credits
+- Adjustment applies full 1500 when first joining groups
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AUTO_APPLY_GROUP_CREDITS` | `true` | Enable/disable automatic group credit adjustments during sync |
+| `DEFAULT_GROUP_CREDITS` | `1000` | Default credit amount for group-based allocations |
+| `DEFAULT_USER_CREDITS` | `1000` | Default credit amount for direct user assignments |
 
 ---
 
