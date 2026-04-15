@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 from pydantic import BaseModel
 
 from app.database import db
-<<<<<<< HEAD
 from app.config import DB_FILE, DATABASE_URL, AUTO_APPLY_GROUP_CREDITS, DEFAULT_USER_CREDITS  # OpenWebUI database for user sync
 from app.auth import get_current_admin_user, verify_api_key, User
 
